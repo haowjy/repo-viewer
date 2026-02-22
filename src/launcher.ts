@@ -20,6 +20,7 @@ type ParsedArgs = {
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDirectoryPath = path.dirname(currentFilePath);
 const appDir = path.resolve(currentDirectoryPath, "..");
+const builtServerPath = path.resolve(currentDirectoryPath, "server.js");
 
 function printUsage(): void {
   console.log(`Usage: pnpm dev -- [options]
@@ -291,15 +292,12 @@ function runSync(commandName: string, args: string[]): void {
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-
-  if (!hasCommand("pnpm")) {
-    fail("pnpm is required but not installed.");
-  }
+  const runBuiltServer = existsSync(builtServerPath);
 
   if (args.serveEnabled) {
     if (!hasCommand("tailscale")) {
       fail(
-        "tailscale is not installed, but serve mode is enabled.\nUse local-only mode: pnpm dev -- --no-serve (or pnpm dev -- --password <pwd>).\nOr install Tailscale, run 'tailscale up', then restart with --serve.",
+        "tailscale is not installed, but serve mode is enabled.\nUse local-only mode with --no-serve (or --password <pwd>).\nOr install Tailscale, run 'tailscale up', then restart with --serve.",
       );
     }
     runSyncOrFail(
@@ -309,14 +307,18 @@ function main(): void {
     );
   }
 
-  if (!existsSync(path.join(appDir, "package.json"))) {
-    fail(`remote-workspace app not found at: ${appDir}`);
-  }
-
-  if (args.forceInstall) {
-    runSyncOrFail("pnpm", ["--dir", appDir, "install"], "Dependency install failed.");
-  } else if (!args.skipInstall && !existsSync(path.join(appDir, "node_modules"))) {
-    runSyncOrFail("pnpm", ["--dir", appDir, "install"], "Dependency install failed.");
+  if (!runBuiltServer) {
+    if (!hasCommand("pnpm")) {
+      fail("pnpm is required but not installed.");
+    }
+    if (!existsSync(path.join(appDir, "package.json"))) {
+      fail(`remote-workspace app not found at: ${appDir}`);
+    }
+    if (args.forceInstall) {
+      runSyncOrFail("pnpm", ["--dir", appDir, "install"], "Dependency install failed.");
+    } else if (!args.skipInstall && !existsSync(path.join(appDir, "node_modules"))) {
+      runSyncOrFail("pnpm", ["--dir", appDir, "install"], "Dependency install failed.");
+    }
   }
 
   if (args.serveEnabled) {
@@ -344,19 +346,33 @@ function main(): void {
   }
   console.log("");
 
-  const child = spawn(
-    "pnpm",
-    ["--dir", appDir, "dev:server"],
-    {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        REPO_ROOT: args.repoRoot,
-        REMOTE_WS_PORT: String(args.port),
-        REMOTE_WS_PASSWORD: args.workspacePassword,
-      },
-    },
-  );
+  const child = runBuiltServer
+    ? spawn(
+        "node",
+        [builtServerPath],
+        {
+          stdio: "inherit",
+          env: {
+            ...process.env,
+            REPO_ROOT: args.repoRoot,
+            REMOTE_WS_PORT: String(args.port),
+            REMOTE_WS_PASSWORD: args.workspacePassword,
+          },
+        },
+      )
+    : spawn(
+        "pnpm",
+        ["--dir", appDir, "dev:server"],
+        {
+          stdio: "inherit",
+          env: {
+            ...process.env,
+            REPO_ROOT: args.repoRoot,
+            REMOTE_WS_PORT: String(args.port),
+            REMOTE_WS_PASSWORD: args.workspacePassword,
+          },
+        },
+      );
 
   child.on("exit", (code, signal) => {
     if (signal) {

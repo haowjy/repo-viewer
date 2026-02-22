@@ -1,7 +1,16 @@
 {
-  "name": "@meridian/remote-workspace",
+  "name": "@haowjy/remote-workspace",
   "version": "0.1.0",
   "description": "Mobile-friendly web workspace for SSH + tmux workflows.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haowjy/remote-workspace.git"
+  },
+  "bugs": {
+    "url": "https://github.com/haowjy/remote-workspace/issues"
+  },
+  "homepage": "https://github.com/haowjy/remote-workspace#readme",
   "type": "module",
   "scripts": {
     "dev": "tsx src/launcher.ts",
