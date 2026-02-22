@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tgz
+.npm-cache/
+npm-debug.log*
+pnpm-debug.log*
+
+.remote-workspace.conf
+.env
+.env.*
+
+.clipboard/
+.playwright-mcp/
+
+.DS_Store
