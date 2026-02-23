@@ -1,6 +1,6 @@
 {
   "name": "@haowjy/repo-viewer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Mobile-friendly read-only web file browser for repositories.",
   "license": "MIT",
   "repository": {
