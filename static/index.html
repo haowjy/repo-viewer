@@ -142,19 +142,6 @@
         </div>
       </section>
 
-      <!-- Tab: Screenshots -->
-      <section id="panel-screenshots" class="tab-panel absolute inset-0 flex flex-col hidden">
-        <div class="shrink-0 bg-ink-900/60 border-b border-ink-800 px-4 py-2.5 flex items-center gap-2">
-          <span class="text-xs text-ink-500 font-mono">.playwright-mcp/</span>
-          <div class="flex-1"></div>
-          <button id="screenshots-refresh-btn" type="button" class="p-1.5 text-ink-500 hover:text-ink-300 rounded-lg hover:bg-ink-800 transition-colors" title="Refresh">
-            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-          </button>
-        </div>
-        <div id="screenshots-status" class="shrink-0 px-4 py-1 text-[11px] text-ink-500 font-mono min-h-[1.4em]"></div>
-        <div id="screenshots-grid" class="flex-1 overflow-y-auto overscroll-contain p-3 grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3 content-start"></div>
-      </section>
-
       <!-- Lightbox overlay -->
       <div id="lightbox" class="hidden absolute inset-0 z-50 bg-ink-950/90">
         <!-- Modal panel -->
@@ -185,11 +172,6 @@
         <i data-lucide="clipboard" class="w-5 h-5"></i>
         <span class="text-[10px] font-semibold uppercase tracking-wide">Clipboard</span>
         <span id="tab-badge-clipboard" class="text-[9px] font-mono text-ink-600"></span>
-      </button>
-      <button type="button" class="tab-btn flex-1 flex flex-col items-center gap-0.5 py-2.5 text-ink-500 transition-colors" data-tab="screenshots">
-        <i data-lucide="camera" class="w-5 h-5"></i>
-        <span class="text-[10px] font-semibold uppercase tracking-wide">Screenshots</span>
-        <span id="tab-badge-screenshots" class="text-[9px] font-mono text-ink-600"></span>
       </button>
     </nav>
 

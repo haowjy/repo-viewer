@@ -7,7 +7,7 @@ Repo: `/home/jimyao/gitrepos/remote-workspace`
 Remote/mobile workspace for SSH + tmux workflows:
 - browse repo files from phone
 - upload/delete images in `.clipboard`
-- view/manage screenshots in `.playwright-mcp`
+- view folder image grids from the Files tab (including configured hidden/gitignored folders)
 - fast reloads via local metadata cache + HTTP image caching
 
 ## Current Status
@@ -22,14 +22,15 @@ Remote/mobile workspace for SSH + tmux workflows:
 - `--no-serve` local-only mode.
 - `--funnel` supported and requires password auth.
 - `--password [pwd]` supports inline or non-inline enablement.
+- `--image-dirs <csv>` allows explicit hidden/gitignored image folders (default `.clipboard`).
 - Basic Auth middleware in server with:
   - constant-time password comparison
   - auth-failure rate limiting / temporary block
   - same-origin check for mutating methods (`POST`/`DELETE` etc.)
 - Delete endpoints:
   - `DELETE /api/clipboard/file?name=...`
-  - `DELETE /api/screenshots/file?name=...`
-- Frontend image delete buttons for both `.clipboard` and `.playwright-mcp`.
+- Files tab can render a folder-level image gallery for directories (non-clipboard images are viewed via `/api/file`).
+- Hidden/gitignored folders listed in `REMOTE_WS_IMAGE_DIRS` remain visible in file listing and file reads.
 - Caching:
   - server cache headers + validators for image endpoints
   - client stale-while-refresh metadata cache for list/tree/search
@@ -50,8 +51,8 @@ Config file selection precedence:
 
 ## Important Files
 - `src/launcher.ts` (CLI/flags, tailscale orchestration, config resolution)
-- `src/server.ts` (API, auth middleware, rate limit/origin checks, delete endpoints)
-- `static/app.js` (UI behavior, delete buttons, local cache behavior)
+- `src/server.ts` (API, auth middleware, rate limit/origin checks, image-dir visibility rules)
+- `static/app.js` (UI behavior, folder image gallery, local cache behavior)
 - `README.md` (usage + security notes)
 
 ## Known Follow-ups

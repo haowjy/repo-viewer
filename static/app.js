@@ -53,7 +53,6 @@ const CACHE_KEYS = {
   topLevel: `${CACHE_PREFIX}top-level`,
   searchIndex: `${CACHE_PREFIX}search-index`,
   clipboardEntries: `${CACHE_PREFIX}clipboard-entries`,
-  screenshotsEntries: `${CACHE_PREFIX}screenshots-entries`,
 };
 
 // ---------------------------------------------------------------------------
@@ -73,16 +72,13 @@ const state = {
   selectedPath: "",
   fileRequestId: 0,
   fileAbortController: null,
+  selectedPathType: "",
   clipboardRequestId: 0,
   clipboardAbortController: null,
   clipboardApiMode: "modern",
   pendingUploadFile: null,
   searchDebounceTimer: null,
   filesMobileMode: "explorer",
-  // Screenshots
-  screenshotEntries: [],
-  screenshotsRequestId: 0,
-  screenshotsAbortController: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -106,9 +102,6 @@ const treeRefreshBtn = $("tree-refresh-btn");
 const fileTreeContainer = $("file-tree-container");
 const fileViewerContainer = $("file-viewer-container");
 const mobileExplorerBackBtn = $("mobile-explorer-back-btn");
-const screenshotsGrid = $("screenshots-grid");
-const screenshotsStatusEl = $("screenshots-status");
-const screenshotsRefreshBtn = $("screenshots-refresh-btn");
 const viewerRefreshBtn = $("viewer-refresh-btn");
 const lightbox = $("lightbox");
 const lightboxPanel = $("lightbox-panel");
@@ -121,7 +114,6 @@ const hljsThemeLink = $("hljs-theme");
 // Tab badges
 const tabBadgeClipboard = $("tab-badge-clipboard");
 const tabBadgeFiles = $("tab-badge-files");
-const tabBadgeScreenshots = $("tab-badge-screenshots");
 
 // ---------------------------------------------------------------------------
 // Markdown + highlight.js integration
@@ -189,13 +181,6 @@ function setStatus(message, isError = false) {
 function setClipboardStatus(message, isError = false) {
   clipboardStatusEl.textContent = message;
   clipboardStatusEl.className = isError
-    ? "shrink-0 px-4 py-1 text-[11px] text-red-400 font-mono min-h-[1.4em]"
-    : "shrink-0 px-4 py-1 text-[11px] text-ink-500 font-mono min-h-[1.4em]";
-}
-
-function setScreenshotsStatus(message, isError = false) {
-  screenshotsStatusEl.textContent = message;
-  screenshotsStatusEl.className = isError
     ? "shrink-0 px-4 py-1 text-[11px] text-red-400 font-mono min-h-[1.4em]"
     : "shrink-0 px-4 py-1 text-[11px] text-ink-500 font-mono min-h-[1.4em]";
 }
@@ -348,12 +333,14 @@ function syncFilesLayout() {
 // ---------------------------------------------------------------------------
 const tabButtons = document.querySelectorAll(".tab-btn");
 const tabPanels = document.querySelectorAll(".tab-panel");
+const VALID_TABS = new Set(["files", "clipboard"]);
 
 function switchTab(tabName) {
-  state.activeTab = tabName;
-  localStorage.setItem("workspace-tab", tabName);
-  tabPanels.forEach((p) => p.classList.toggle("hidden", p.id !== `panel-${tabName}`));
-  tabButtons.forEach((b) => b.classList.toggle("active", b.dataset.tab === tabName));
+  const nextTab = VALID_TABS.has(tabName) ? tabName : "files";
+  state.activeTab = nextTab;
+  localStorage.setItem("workspace-tab", nextTab);
+  tabPanels.forEach((p) => p.classList.toggle("hidden", p.id !== `panel-${nextTab}`));
+  tabButtons.forEach((b) => b.classList.toggle("active", b.dataset.tab === nextTab));
   syncFilesLayout();
   refreshIcons();
 }
@@ -556,12 +543,12 @@ function renderTreeNode(entry, depth, container) {
   const iconName = getFileIconName(entry.name, entry.type);
 
   const row = document.createElement("div");
-  row.className = "tree-item";
+  row.className = "tree-item flex items-center gap-1";
   row.style.setProperty("--depth", depth);
 
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = `w-full flex items-center gap-1.5 px-2 py-[3px] text-sm rounded-md transition-colors group ${
+  btn.className = `flex-1 min-w-0 flex items-center gap-1.5 px-2 py-[3px] text-sm rounded-md transition-colors group ${
     isActive ? "bg-brand/10 text-brand font-medium" : "text-ink-300 hover:bg-ink-800"
   }`;
 
@@ -589,6 +576,22 @@ function renderTreeNode(entry, depth, container) {
   };
 
   row.appendChild(btn);
+  if (isDir) {
+    const openFolderBtn = document.createElement("button");
+    openFolderBtn.type = "button";
+    openFolderBtn.className = `shrink-0 p-1 rounded-md transition-colors ${
+      isActive
+        ? "text-brand hover:bg-brand/10"
+        : "text-ink-500 hover:text-ink-300 hover:bg-ink-800"
+    }`;
+    openFolderBtn.title = "Open folder images";
+    openFolderBtn.innerHTML = '<i data-lucide="eye" class="w-3.5 h-3.5"></i>';
+    openFolderBtn.onclick = (event) => {
+      event.stopPropagation();
+      openDirectory(entry.path).catch(handleActionError);
+    };
+    row.appendChild(openFolderBtn);
+  }
   container.appendChild(row);
 
   if (isDir && isExpanded) {
@@ -613,6 +616,19 @@ function toggleDirectory(dirPath) {
       renderTree();
     }
   }
+}
+
+function ensureDirectoryExpanded(dirPath) {
+  if (!state.expandedPaths.has(dirPath)) {
+    state.expandedPaths.add(dirPath);
+    if (!state.dirChildren.has(dirPath)) {
+      loadDirChildren(dirPath);
+    } else {
+      renderTree();
+    }
+    return;
+  }
+  renderTree();
 }
 
 function expandParentsOf(filePath) {
@@ -681,11 +697,7 @@ function handleSearch(query) {
       searchResultsEl.innerHTML = "";
       expandParentsOf(result.path);
       if (result.type === "directory") {
-        if (!isDesktopLayout()) {
-          state.filesMobileMode = "explorer";
-          syncFilesLayout();
-        }
-        toggleDirectory(result.path);
+        openDirectory(result.path, { toggleExpand: false }).catch(handleActionError);
       } else {
         openFile(result.path).catch(handleActionError);
       }
@@ -714,6 +726,128 @@ searchInput.addEventListener("focus", () => {
 // ---------------------------------------------------------------------------
 // File preview
 // ---------------------------------------------------------------------------
+function fileImageUrl(entry) {
+  return appendVersionQuery(`/api/file?path=${encodeURIComponent(entry.path)}`, entry);
+}
+
+function renderDirectoryImageGallery(directoryPath, entries) {
+  if (entries.length === 0) {
+    viewer.innerHTML = `<div class="flex flex-col items-center justify-center h-full text-ink-600">
+      <i data-lucide="image-off" class="w-10 h-10 mb-2 opacity-40"></i>
+      <p class="text-sm">No images directly in <span class="font-mono">${escapeHtml(directoryPath)}/</span></p>
+    </div>`;
+    refreshIcons();
+    return;
+  }
+
+  viewer.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start";
+
+  for (const entry of entries) {
+    const imageUrl = fileImageUrl(entry);
+    const card = document.createElement("div");
+    card.className = "relative group border border-ink-800 rounded-lg bg-ink-900 p-1.5 flex flex-col gap-1 hover:border-ink-600 transition-colors";
+
+    const imageButton = document.createElement("button");
+    imageButton.type = "button";
+    imageButton.className = "block w-full";
+    imageButton.innerHTML = `<img alt="${escapeHtml(entry.name)}" src="${imageUrl}" loading="lazy" class="w-full h-32 object-cover rounded border border-ink-800 bg-ink-950" />`;
+    imageButton.onclick = () => openLightbox(imageUrl);
+
+    const footer = document.createElement("div");
+    footer.className = "flex items-center gap-1 min-w-0";
+    footer.innerHTML = `<span class="text-[11px] font-mono text-ink-500 truncate flex-1">${escapeHtml(entry.name)}</span>`;
+    if (entry.size) {
+      footer.innerHTML += `<span class="text-[10px] font-mono text-ink-600 shrink-0">${formatBytes(entry.size)}</span>`;
+    }
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "shrink-0 p-0.5 text-ink-500 hover:text-brand rounded transition-colors ml-1";
+    copyBtn.title = "Copy path";
+    copyBtn.innerHTML = `<i data-lucide="copy" class="w-3 h-3"></i>`;
+    copyBtn.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(entry.path);
+        copyBtn.innerHTML = `<i data-lucide="check" class="w-3 h-3 text-green-400"></i>`;
+        refreshIcons();
+        setTimeout(() => {
+          copyBtn.innerHTML = `<i data-lucide="copy" class="w-3 h-3"></i>`;
+          refreshIcons();
+        }, 1500);
+      } catch {
+        setStatus("Copy failed — clipboard access denied.", true);
+      }
+    };
+    footer.appendChild(copyBtn);
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "shrink-0 p-0.5 text-ink-500 hover:text-brand rounded transition-colors";
+    openBtn.title = "Open in file viewer";
+    openBtn.innerHTML = `<i data-lucide="maximize-2" class="w-3 h-3"></i>`;
+    openBtn.onclick = (e) => {
+      e.stopPropagation();
+      openFile(entry.path).catch(handleActionError);
+    };
+    footer.appendChild(openBtn);
+
+    card.appendChild(imageButton);
+    card.appendChild(footer);
+    grid.appendChild(card);
+  }
+
+  viewer.appendChild(grid);
+  refreshIcons();
+}
+
+async function openDirectory(dirPath, options = {}) {
+  const requestId = ++state.fileRequestId;
+  if (state.fileAbortController) state.fileAbortController.abort();
+  const controller = new AbortController();
+  state.fileAbortController = controller;
+  const toggleExpand = options.toggleExpand !== false;
+
+  state.selectedPath = dirPath;
+  state.selectedPathType = "directory";
+  viewerRefreshBtn.classList.remove("hidden");
+  localStorage.removeItem("workspace-file");
+  expandParentsOf(dirPath);
+  if (toggleExpand) {
+    toggleDirectory(dirPath);
+  } else {
+    ensureDirectoryExpanded(dirPath);
+  }
+  renderTree();
+  if (!isDesktopLayout()) {
+    state.filesMobileMode = "viewer";
+    syncFilesLayout();
+  }
+
+  viewerTitle.textContent = `${dirPath}/`;
+  setStatus(`Listing images in ${dirPath}/...`);
+
+  const response = await fetch(`/api/list?path=${encodeURIComponent(dirPath)}`, {
+    signal: controller.signal,
+  });
+  const data = await readJsonResponse(response);
+  if (requestId !== state.fileRequestId) return;
+
+  if (!response.ok) {
+    viewer.innerHTML = `<p class="text-red-400 text-sm">${escapeHtml(data.error || "Failed to open folder.")}</p>`;
+    setStatus("Folder open failed", true);
+    return;
+  }
+
+  const imageEntries = (data.entries || []).filter(
+    (entry) => entry.type === "file" && isImagePath(entry.path || entry.name),
+  );
+  renderDirectoryImageGallery(dirPath, imageEntries);
+  setStatus(`${imageEntries.length} image(s) in ${dirPath}/`);
+}
+
 async function openFile(filePath) {
   const requestId = ++state.fileRequestId;
   if (state.fileAbortController) state.fileAbortController.abort();
@@ -721,6 +855,7 @@ async function openFile(filePath) {
   state.fileAbortController = controller;
 
   state.selectedPath = filePath;
+  state.selectedPathType = "file";
   localStorage.setItem("workspace-file", filePath);
   viewerRefreshBtn.classList.remove("hidden");
   expandParentsOf(filePath);
@@ -978,138 +1113,6 @@ async function loadClipboardImages(options = {}) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Screenshots
-// ---------------------------------------------------------------------------
-function screenshotImageUrl(entry) {
-  return appendVersionQuery(`/api/screenshots/file?name=${encodeURIComponent(entry.name)}`, entry);
-}
-
-function renderScreenshots(entries) {
-  screenshotsGrid.innerHTML = "";
-  if (entries.length === 0) {
-    screenshotsGrid.innerHTML = '<p class="text-sm text-ink-500 col-span-full py-8 text-center">No screenshots in .playwright-mcp/ yet.</p>';
-    return;
-  }
-
-  for (const entry of entries) {
-    const container = document.createElement("div");
-    container.className = "relative group border border-ink-800 rounded-lg bg-ink-900 p-1.5 flex flex-col gap-1 hover:border-ink-600 transition-colors";
-
-    const imgBtn = document.createElement("button");
-    imgBtn.type = "button";
-    imgBtn.className = "block w-full";
-    const imageUrl = screenshotImageUrl(entry);
-    imgBtn.innerHTML = `<img alt="${escapeHtml(entry.name)}" src="${imageUrl}" loading="lazy" class="w-full h-32 object-cover rounded border border-ink-800 bg-ink-950" />`;
-    imgBtn.onclick = () => openLightbox(imageUrl);
-
-    const footer = document.createElement("div");
-    footer.className = "flex items-center gap-1 min-w-0";
-
-    // Parse timestamp from filename (page-YYYY-MM-DDTHH-MM-SS-mmmZ.png)
-    const tsMatch = entry.name.match(/(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
-    const timeLabel = tsMatch ? `${tsMatch[1]} ${tsMatch[2]}:${tsMatch[3]}:${tsMatch[4]}` : entry.name;
-
-    footer.innerHTML = `<span class="text-[11px] font-mono text-ink-500 truncate flex-1">${escapeHtml(timeLabel)}</span>`;
-
-    if (entry.size) {
-      footer.innerHTML += `<span class="text-[10px] font-mono text-ink-600 shrink-0">${formatBytes(entry.size)}</span>`;
-    }
-
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "shrink-0 p-0.5 text-ink-500 hover:text-brand rounded transition-colors ml-1";
-    copyBtn.title = "Copy path";
-    copyBtn.innerHTML = `<i data-lucide="copy" class="w-3 h-3"></i>`;
-    copyBtn.onclick = async (e) => {
-      e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(`.playwright-mcp/${entry.name}`);
-        copyBtn.innerHTML = `<i data-lucide="check" class="w-3 h-3 text-green-400"></i>`;
-        refreshIcons();
-        setTimeout(() => {
-          copyBtn.innerHTML = `<i data-lucide="copy" class="w-3 h-3"></i>`;
-          refreshIcons();
-        }, 1500);
-      } catch {
-        setScreenshotsStatus("Copy failed — clipboard access denied.", true);
-      }
-    };
-    footer.appendChild(copyBtn);
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "shrink-0 p-0.5 text-ink-500 hover:text-red-400 rounded transition-colors";
-    deleteBtn.title = "Delete image";
-    deleteBtn.innerHTML = `<i data-lucide="trash-2" class="w-3 h-3"></i>`;
-    deleteBtn.onclick = async (e) => {
-      e.stopPropagation();
-      const confirmed = window.confirm(`Delete .playwright-mcp/${entry.name}?`);
-      if (!confirmed) return;
-      try {
-        await deleteScreenshotImage(entry.name);
-      } catch (error) {
-        setScreenshotsStatus(toErrorMessage(error), true);
-      }
-    };
-    footer.appendChild(deleteBtn);
-
-    container.appendChild(imgBtn);
-    container.appendChild(footer);
-    screenshotsGrid.appendChild(container);
-  }
-  refreshIcons();
-}
-
-async function loadScreenshots(options = {}) {
-  const preferCache = options.preferCache !== false;
-  const requestId = ++state.screenshotsRequestId;
-  if (state.screenshotsAbortController) state.screenshotsAbortController.abort();
-  const controller = new AbortController();
-  state.screenshotsAbortController = controller;
-  const cachedEntries = preferCache ? readCachedValue(CACHE_KEYS.screenshotsEntries) : null;
-
-  try {
-    setScreenshotsStatus("Loading...");
-    if (cachedEntries && Array.isArray(cachedEntries.entries)) {
-      state.screenshotEntries = cachedEntries.entries;
-      tabBadgeScreenshots.textContent = cachedEntries.entries.length ? `${cachedEntries.entries.length}` : "";
-      renderScreenshots(cachedEntries.entries);
-      setScreenshotsStatus(`${cachedEntries.entries.length} cached screenshot(s) (refreshing...)`);
-    }
-
-    const res = await fetch("/api/screenshots/list", { signal: controller.signal });
-    let data;
-    try { data = await readJsonResponse(res); } catch (error) {
-      if (isRouteMissingResponse(res, error)) {
-        // Server doesn't have screenshots endpoint yet — show empty
-        if (requestId !== state.screenshotsRequestId) return;
-        tabBadgeScreenshots.textContent = "";
-        renderScreenshots([]);
-        setScreenshotsStatus("Screenshots API not available");
-        return;
-      }
-      throw error;
-    }
-    if (!res.ok) throw new Error(data.error || "Unable to load screenshots");
-    if (requestId !== state.screenshotsRequestId) return;
-
-    const entries = data.entries || [];
-    state.screenshotEntries = entries;
-    writeCachedValue(CACHE_KEYS.screenshotsEntries, { entries });
-    tabBadgeScreenshots.textContent = entries.length ? `${entries.length}` : "";
-    renderScreenshots(entries);
-    setScreenshotsStatus(`${entries.length} screenshot(s)`);
-  } catch (error) {
-    if (isAbortError(error)) return;
-    if (cachedEntries && Array.isArray(cachedEntries.entries)) {
-      setScreenshotsStatus(`Using cached screenshots: ${toErrorMessage(error)}`, true);
-      return;
-    }
-    setScreenshotsStatus(toErrorMessage(error), true);
-  }
-}
-
 async function deleteClipboardImage(name) {
   setClipboardStatus(`Deleting ${name}...`);
   const response = await fetch(`/api/clipboard/file?name=${encodeURIComponent(name)}`, {
@@ -1122,20 +1125,6 @@ async function deleteClipboardImage(name) {
   clearCachedValue(CACHE_KEYS.clipboardEntries);
   await loadClipboardImages({ preferCache: false });
   setClipboardStatus(`Deleted ${name}.`);
-}
-
-async function deleteScreenshotImage(name) {
-  setScreenshotsStatus(`Deleting ${name}...`);
-  const response = await fetch(`/api/screenshots/file?name=${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
-  const data = await readJsonResponse(response);
-  if (!response.ok) {
-    throw new Error(data.error || "Delete failed");
-  }
-  clearCachedValue(CACHE_KEYS.screenshotsEntries);
-  await loadScreenshots({ preferCache: false });
-  setScreenshotsStatus(`Deleted ${name}.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,12 +1260,13 @@ treeRefreshBtn.onclick = () => {
   loadTopLevel({ preferCache: false }).catch(handleActionError);
   loadSearchIndex({ preferCache: false });
 };
-screenshotsRefreshBtn.onclick = () => {
-  clearCachedValue(CACHE_KEYS.screenshotsEntries);
-  loadScreenshots({ preferCache: false }).catch(handleActionError);
-};
 viewerRefreshBtn.onclick = () => {
-  if (state.selectedPath) openFile(state.selectedPath).catch(handleActionError);
+  if (!state.selectedPath) return;
+  if (state.selectedPathType === "directory") {
+    openDirectory(state.selectedPath, { toggleExpand: false }).catch(handleActionError);
+    return;
+  }
+  openFile(state.selectedPath).catch(handleActionError);
 };
 if (mobileExplorerBackBtn) {
   mobileExplorerBackBtn.onclick = () => {
@@ -1290,7 +1280,7 @@ syncFilesLayout();
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
-Promise.all([loadClipboardImages(), loadTopLevel(), loadScreenshots()]).then(() => {
+Promise.all([loadClipboardImages(), loadTopLevel()]).then(() => {
   // Restore last opened file after tree is loaded
   const lastFile = localStorage.getItem("workspace-file");
   if (lastFile) openFile(lastFile).catch(handleActionError);

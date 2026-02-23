@@ -6,10 +6,12 @@ Mobile-friendly read/upload web workspace for this repository.
 
 - Browse repository folders/files
 - Upload images into `.clipboard/` at repo root (single image per upload)
-- Delete images from `.clipboard/` and `.playwright-mcp/` from the UI
+- Delete images from `.clipboard/` from the UI
+- Open any folder in the Files tab to view all images in that folder as a grid
 - Preview text files and images
 - Render Markdown with Mermaid diagrams
 - Hide and block access to configured path segments (always hides `.git`)
+- Allow specific gitignored/hidden image folders (for example `.playwright-mcp`) via config
 - Dedicated collapsible `.clipboard` panel for upload + quick image viewing
 
 This app is intentionally **no text editing** to keep remote access simple and lower risk.
@@ -63,6 +65,7 @@ cd /path/to/your/repo && pnpm dev
 pnpm dev -- config /path/to/config
 pnpm dev -- port 18111
 pnpm dev -- always-hidden .git,.env,.secrets
+pnpm dev -- image-dirs .clipboard,.playwright-mcp
 pnpm dev -- install
 pnpm dev -- no-serve
 pnpm dev -- password your-password
@@ -78,6 +81,7 @@ pnpm dev -- password your-password --funnel
 - `REMOTE_WS_PASSWORD` (optional, enables HTTP Basic Auth when set)
 - `REMOTE_WS_CONFIG_FILE` (optional config file path override)
 - `REMOTE_WS_ALWAYS_HIDDEN` (optional comma-separated extra hidden path segments)
+- `REMOTE_WS_IMAGE_DIRS` (optional comma-separated repo-relative folders to expose for image browsing; default `.clipboard`)
 - `REPO_ROOT` (injected by launcher script)
 
 Password config file format (default: repo root `.remote-workspace.conf`):
@@ -106,6 +110,7 @@ Config file selection precedence:
 - `.clipboard` panel uses dedicated clipboard endpoints (`/api/clipboard/upload`, `/api/clipboard/list`, `/api/clipboard/file`)
 - Main repository browser blocks always-hidden path segments (`.git` + optional configured segments)
 - Gitignored paths are hidden/blocked (for example `node_modules/`, build artifacts, local secrets)
+- `REMOTE_WS_IMAGE_DIRS` / `--image-dirs` lets you allow specific hidden/gitignored folders in Files view (for example `.playwright-mcp`)
 - Accepted upload types are images only (`png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `bmp`, `heic`, `heif`, `avif`)
 - Clipboard panel supports both file picker and `Paste From Clipboard` button (when browser clipboard image API is available)
 - Upload requires `name` query parameter (filename is user-controlled)
@@ -113,16 +118,16 @@ Config file selection precedence:
 - Multipart field names accepted: `file` (current UI) and `files` (legacy cached UI compatibility)
 - Legacy alias: `/api/upload` is still accepted for older cached clients
 
-## Screenshots
+## Folder Image Gallery
 
-- `GET /api/screenshots/list` lists images in `REPO_ROOT/.playwright-mcp`
-- `GET /api/screenshots/file?name=<filename>` streams one screenshot image
-- `DELETE /api/screenshots/file?name=<filename>` deletes one screenshot image
+- Selecting a directory in Files renders a gallery of image files directly inside that folder.
+- Gallery images stream through `GET /api/file?path=<repo-relative-path>`.
+- This works for normal folders and for configured `REMOTE_WS_IMAGE_DIRS` folders.
 
 ## Caching
 
-- The browser now caches image bytes (`/api/clipboard/file`, `/api/screenshots/file`, image responses from `/api/file`) with short-lived cache headers and validators.
-- The client keeps a small local metadata cache (tree + clipboard/screenshot lists) and hydrates immediately on reload, then refreshes in the background.
+- The browser now caches image bytes (`/api/clipboard/file`, image responses from `/api/file`) with short-lived cache headers and validators.
+- The client keeps a small local metadata cache (tree + clipboard lists) and hydrates immediately on reload, then refreshes in the background.
 - Refresh buttons bypass local metadata cache and force a new server fetch.
 
 ## Tailscale

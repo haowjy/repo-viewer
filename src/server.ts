@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { lookup as mimeLookup } from "mime-types";
 
+const CLIPBOARD_DIRECTORY_NAME = ".clipboard";
+
 function parseIntegerFromEnv(
   envName: string,
   fallbackValue: number,
@@ -37,6 +39,31 @@ function assertValidHiddenSegment(segment: string, sourceName: string): void {
   }
 }
 
+function normalizeRepoRelativeDirectoryPath(rawPath: string, sourceName: string): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.includes("\u0000")) {
+    throw new Error(`Invalid ${sourceName} path "${rawPath}": path must not contain null bytes`);
+  }
+
+  const normalized = path.posix.normalize(trimmed.replaceAll("\\", "/")).replace(/^\.\//, "");
+  if (!normalized || normalized === ".") {
+    return "";
+  }
+  if (normalized === ".." || normalized.startsWith("../")) {
+    throw new Error(`Invalid ${sourceName} path "${rawPath}": path must stay inside repository`);
+  }
+  if (path.posix.isAbsolute(normalized)) {
+    throw new Error(`Invalid ${sourceName} path "${rawPath}": path must be repo-relative`);
+  }
+  if (normalized.split("/").includes(".git")) {
+    throw new Error(`Invalid ${sourceName} path "${rawPath}": .git cannot be exposed`);
+  }
+  return normalized;
+}
+
 function parseAlwaysHiddenSegments(rawValue: string | undefined): Set<string> {
   const segments = new Set<string>([".git"]);
   if (rawValue === undefined) {
@@ -54,6 +81,25 @@ function parseAlwaysHiddenSegments(rawValue: string | undefined): Set<string> {
   return segments;
 }
 
+function parseImageDirectoryPaths(rawValue: string | undefined): string[] {
+  const parsed = new Set<string>();
+  const candidates = rawValue === undefined ? [CLIPBOARD_DIRECTORY_NAME] : rawValue.split(",");
+  for (const candidate of candidates) {
+    const normalizedPath = normalizeRepoRelativeDirectoryPath(
+      candidate,
+      "REMOTE_WS_IMAGE_DIRS",
+    );
+    if (!normalizedPath) {
+      continue;
+    }
+    parsed.add(normalizedPath);
+  }
+  if (parsed.size === 0) {
+    throw new Error("Invalid REMOTE_WS_IMAGE_DIRS: provide at least one repo-relative path");
+  }
+  return Array.from(parsed);
+}
+
 const REPO_ROOT = path.resolve(process.env.REPO_ROOT ?? process.cwd());
 const HOST = "127.0.0.1";
 const PORT = parseIntegerFromEnv("REMOTE_WS_PORT", 18080, { min: 1, max: 65535 });
@@ -66,10 +112,8 @@ const MAX_UPLOAD_BYTES = parseIntegerFromEnv("REMOTE_WS_MAX_UPLOAD_BYTES", 26_21
 const MAX_TREE_ENTRIES = parseIntegerFromEnv("REMOTE_WS_MAX_TREE_ENTRIES", 5000, {
   min: 1,
 });
-const CLIPBOARD_DIRECTORY_NAME = ".clipboard";
 const CLIPBOARD_DIRECTORY_PATH = path.resolve(REPO_ROOT, CLIPBOARD_DIRECTORY_NAME);
-const SCREENSHOTS_DIRECTORY_NAME = ".playwright-mcp";
-const SCREENSHOTS_DIRECTORY_PATH = path.resolve(REPO_ROOT, SCREENSHOTS_DIRECTORY_NAME);
+const IMAGE_DIRECTORY_PATHS = parseImageDirectoryPaths(process.env.REMOTE_WS_IMAGE_DIRS);
 const ALLOWED_IMAGE_EXTENSIONS = new Set([
   ".png",
   ".jpg",
@@ -288,6 +332,25 @@ function toRepoRelativePath(absPath: string): string {
   return relative.split(path.sep).join("/");
 }
 
+function pathStartsWithDirectory(
+  repoRelativePath: string,
+  repoRelativeDirectoryPath: string,
+): boolean {
+  return (
+    repoRelativePath === repoRelativeDirectoryPath ||
+    repoRelativePath.startsWith(`${repoRelativeDirectoryPath}/`)
+  );
+}
+
+function isConfiguredImageDirectoryPath(repoRelativePath: string): boolean {
+  if (!repoRelativePath) {
+    return false;
+  }
+  return IMAGE_DIRECTORY_PATHS.some((directoryPath) =>
+    pathStartsWithDirectory(repoRelativePath, directoryPath),
+  );
+}
+
 function isHiddenRepoRelativePath(repoRelativePath: string): boolean {
   if (!repoRelativePath) {
     return false;
@@ -298,7 +361,10 @@ function isHiddenRepoRelativePath(repoRelativePath: string): boolean {
 }
 
 function isBlockedHiddenRepoRelativePath(repoRelativePath: string): boolean {
-  return isHiddenRepoRelativePath(repoRelativePath);
+  return (
+    isHiddenRepoRelativePath(repoRelativePath) &&
+    !isConfiguredImageDirectoryPath(repoRelativePath)
+  );
 }
 
 function parseGitIgnoredStdout(stdout: string | Buffer | undefined): Set<string> {
@@ -342,9 +408,11 @@ async function assertPathAccessible(
     throw new Error("Hidden paths are not accessible");
   }
   if (!options?.allowGitIgnored && repoRelativePath) {
-    const ignoredPathSet = await getGitIgnoredPathSet([repoRelativePath]);
-    if (ignoredPathSet.has(repoRelativePath)) {
-      throw new Error("Gitignored paths are not accessible");
+    if (!isConfiguredImageDirectoryPath(repoRelativePath)) {
+      const ignoredPathSet = await getGitIgnoredPathSet([repoRelativePath]);
+      if (ignoredPathSet.has(repoRelativePath)) {
+        throw new Error("Gitignored paths are not accessible");
+      }
     }
   }
 }
@@ -662,6 +730,68 @@ function sortTree(node: TreeNode): void {
   }
 }
 
+async function collectConfiguredImageDirectoryFiles(
+  maxFiles: number,
+): Promise<string[]> {
+  const collectedPaths: string[] = [];
+
+  for (const repoRelativeDirectoryPath of IMAGE_DIRECTORY_PATHS) {
+    if (collectedPaths.length >= maxFiles) {
+      break;
+    }
+
+    const absoluteDirectoryPath = resolveRepoPath(repoRelativeDirectoryPath);
+    let stats;
+    try {
+      stats = await fs.stat(absoluteDirectoryPath);
+    } catch {
+      continue;
+    }
+    if (!stats.isDirectory()) {
+      continue;
+    }
+
+    const stack = [absoluteDirectoryPath];
+    while (stack.length > 0 && collectedPaths.length < maxFiles) {
+      const currentDirectoryPath = stack.pop();
+      if (!currentDirectoryPath) {
+        break;
+      }
+
+      let dirEntries;
+      try {
+        dirEntries = await fs.readdir(currentDirectoryPath, {
+          withFileTypes: true,
+        });
+      } catch {
+        continue;
+      }
+
+      for (const dirEntry of dirEntries) {
+        if (dirEntry.isSymbolicLink()) {
+          continue;
+        }
+
+        const childPath = path.join(currentDirectoryPath, dirEntry.name);
+        if (dirEntry.isDirectory()) {
+          stack.push(childPath);
+          continue;
+        }
+        if (!dirEntry.isFile()) {
+          continue;
+        }
+
+        collectedPaths.push(toRepoRelativePath(childPath));
+        if (collectedPaths.length >= maxFiles) {
+          break;
+        }
+      }
+    }
+  }
+
+  return collectedPaths;
+}
+
 app.get("/api/tree", async (_req, res) => {
   try {
     const { stdout } = await execFileAsync(
@@ -670,13 +800,14 @@ app.get("/api/tree", async (_req, res) => {
       { maxBuffer: 10 * 1024 * 1024 },
     );
 
-    const allPaths = String(stdout)
+    const gitPaths = String(stdout)
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
+    const extraVisiblePaths = await collectConfiguredImageDirectoryFiles(MAX_TREE_ENTRIES * 4);
+    const allPaths = Array.from(new Set([...gitPaths, ...extraVisiblePaths]));
 
-    // Filter hidden paths
-    const visiblePaths = allPaths.filter((p) => !isHiddenRepoRelativePath(p));
+    const visiblePaths = allPaths.filter((p) => !isBlockedHiddenRepoRelativePath(p));
 
     const truncated = visiblePaths.length > MAX_TREE_ENTRIES;
     const paths = truncated ? visiblePaths.slice(0, MAX_TREE_ENTRIES) : visiblePaths;
@@ -742,7 +873,10 @@ app.get("/api/list", async (req, res) => {
     );
 
     for (const candidate of candidates) {
-      if (ignoredPathSet.has(candidate.childRepoRelativePath)) {
+      if (
+        ignoredPathSet.has(candidate.childRepoRelativePath) &&
+        !isConfiguredImageDirectoryPath(candidate.childRepoRelativePath)
+      ) {
         skippedIgnored += 1;
         continue;
       }
@@ -903,123 +1037,6 @@ app.delete("/api/clipboard/file", async (req, res) => {
   }
 });
 
-app.get("/api/screenshots/list", async (_req, res) => {
-  try {
-    const dirEntries = await fs.readdir(SCREENSHOTS_DIRECTORY_PATH, {
-      withFileTypes: true,
-    }).catch(() => [] as never[]);
-
-    const entries: Entry[] = [];
-    for (const dirEntry of dirEntries) {
-      if (!dirEntry.isFile()) continue;
-      const extension = path.extname(dirEntry.name).toLowerCase();
-      if (!ALLOWED_IMAGE_EXTENSIONS.has(extension)) continue;
-
-      const absPath = path.join(SCREENSHOTS_DIRECTORY_PATH, dirEntry.name);
-      let stats;
-      try {
-        stats = await fs.stat(absPath);
-      } catch {
-        continue;
-      }
-
-      entries.push({
-        name: dirEntry.name,
-        path: `${SCREENSHOTS_DIRECTORY_NAME}/${dirEntry.name}`,
-        type: "file",
-        size: stats.size,
-        modifiedAt: stats.mtime.toISOString(),
-      });
-    }
-
-    entries.sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt));
-    setMetadataCacheHeaders(res);
-    res.json({
-      directory: SCREENSHOTS_DIRECTORY_NAME,
-      entries,
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unable to list screenshots";
-    res.status(400).json({ error: message });
-  }
-});
-
-app.get("/api/screenshots/file", async (req, res) => {
-  try {
-    const requestedName = getSingleQueryValue(req.query.name);
-    if (!requestedName) {
-      res.status(400).json({ error: "Missing ?name=..." });
-      return;
-    }
-
-    const { path: absPath } = resolveNamedImagePath(
-      SCREENSHOTS_DIRECTORY_PATH,
-      requestedName,
-    );
-    const stats = await fs.stat(absPath);
-    if (!stats.isFile()) {
-      res.status(400).json({ error: "Not a file" });
-      return;
-    }
-    const realPath = await fs.realpath(absPath);
-    const relativeToDirectory = path.relative(
-      SCREENSHOTS_DIRECTORY_PATH,
-      realPath,
-    );
-    if (
-      relativeToDirectory.startsWith("..") ||
-      path.isAbsolute(relativeToDirectory)
-    ) {
-      res.status(400).json({ error: "Path escapes target directory" });
-      return;
-    }
-    if (setImageCacheHeaders(req, res, stats)) {
-      return;
-    }
-
-    const mimeType = mimeLookup(absPath) || "application/octet-stream";
-    res.setHeader("Content-Type", mimeType);
-    res.setHeader("Content-Length", String(stats.size));
-    await pipeline(createReadStream(absPath), res);
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unable to stream screenshot";
-    if (!res.headersSent) {
-      res.status(400).json({ error: message });
-      return;
-    }
-    res.destroy();
-  }
-});
-
-app.delete("/api/screenshots/file", async (req, res) => {
-  try {
-    const requestedName = getSingleQueryValue(req.query.name);
-    if (!requestedName) {
-      res.status(400).json({ error: "Missing ?name=..." });
-      return;
-    }
-
-    const { path: absPath } = resolveNamedImagePath(
-      SCREENSHOTS_DIRECTORY_PATH,
-      requestedName,
-    );
-    await fs.unlink(absPath);
-    res.setHeader("Cache-Control", "no-store");
-    res.status(204).end();
-  } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code === "ENOENT") {
-      res.status(404).json({ error: "File not found" });
-      return;
-    }
-    const message =
-      error instanceof Error ? error.message : "Unable to delete screenshot";
-    res.status(400).json({ error: message });
-  }
-});
-
 app.get("/api/text", async (req, res) => {
   try {
     const requestedPath = getSingleQueryValue(req.query.path);
@@ -1124,6 +1141,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 app.listen(PORT, HOST, () => {
   console.log(`[remote-workspace] root: ${REPO_ROOT}`);
   console.log(`[remote-workspace] http://${HOST}:${PORT}`);
+  console.log(`[remote-workspace] image directories: ${IMAGE_DIRECTORY_PATHS.join(", ")}`);
   if (BASIC_AUTH_PASSWORD.length > 0) {
     console.log("[remote-workspace] basic auth: enabled");
   }

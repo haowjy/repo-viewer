@@ -16,6 +16,7 @@ type ParsedArgs = {
   workspacePassword: string;
   configFile: string;
   alwaysHidden: string | null;
+  imageDirs: string | null;
 };
 
 const currentFilePath = fileURLToPath(import.meta.url);
@@ -31,6 +32,7 @@ Options:
   --config <path>    Config file path (default uses precedence search)
   --port <port>      Listen port (default: REMOTE_WS_PORT or 18080)
   --always-hidden <csv> Extra always-hidden path segments (comma-separated)
+  --image-dirs <csv> Visible image folders (repo-relative, comma-separated)
   --install          Force dependency install before start
   --skip-install     Skip install check even if node_modules is missing
   --no-serve         Skip tailscale serve setup
@@ -45,6 +47,7 @@ Examples:
   pnpm dev -- --config ~/.config/remote-workspace/config
   pnpm dev -- --port 18111
   pnpm dev -- --always-hidden .git,.env,.secrets
+  pnpm dev -- --image-dirs .clipboard,.playwright-mcp
   pnpm dev -- --password
   pnpm dev -- --password mypass --serve
   pnpm dev -- --password mypass --funnel
@@ -88,6 +91,46 @@ function parseAlwaysHiddenCsv(rawValue: string, sourceLabel: string): string {
   }
 
   return Array.from(normalizedSegments).join(",");
+}
+
+function normalizeRepoRelativePath(rawValue: string, sourceLabel: string): string {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.includes("\u0000")) {
+    fail(`Invalid ${sourceLabel} path "${rawValue}": path must not contain null bytes.`);
+  }
+
+  const normalized = path.posix.normalize(trimmed.replaceAll("\\", "/")).replace(/^\.\//, "");
+  if (!normalized || normalized === ".") {
+    return "";
+  }
+  if (normalized === ".." || normalized.startsWith("../")) {
+    fail(`Invalid ${sourceLabel} path "${rawValue}": path must stay inside repository.`);
+  }
+  if (path.posix.isAbsolute(normalized)) {
+    fail(`Invalid ${sourceLabel} path "${rawValue}": path must be repo-relative.`);
+  }
+  if (normalized.split("/").includes(".git")) {
+    fail(`Invalid ${sourceLabel} path "${rawValue}": .git cannot be exposed.`);
+  }
+  return normalized;
+}
+
+function parseImageDirsCsv(rawValue: string, sourceLabel: string): string {
+  const normalizedPaths = new Set<string>();
+  for (const rawPath of rawValue.split(",")) {
+    const normalizedPath = normalizeRepoRelativePath(rawPath, sourceLabel);
+    if (!normalizedPath) {
+      continue;
+    }
+    normalizedPaths.add(normalizedPath);
+  }
+  if (normalizedPaths.size === 0) {
+    fail(`Invalid ${sourceLabel} value: provide at least one repo-relative path.`);
+  }
+  return Array.from(normalizedPaths).join(",");
 }
 
 function parseConfigPassword(configFilePath: string): string {
@@ -152,6 +195,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let configFileFromArg: string | null = null;
   let configFile = "";
   let alwaysHidden: string | null = null;
+  let imageDirs: string | null = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -189,6 +233,15 @@ function parseArgs(argv: string[]): ParsedArgs {
           fail("Missing value for --always-hidden.");
         }
         alwaysHidden = parseAlwaysHiddenCsv(next, "--always-hidden");
+        i += 1;
+        break;
+      }
+      case "--image-dirs": {
+        const next = argv[i + 1];
+        if (!next || next.startsWith("--")) {
+          fail("Missing value for --image-dirs.");
+        }
+        imageDirs = parseImageDirsCsv(next, "--image-dirs");
         i += 1;
         break;
       }
@@ -303,6 +356,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     workspacePassword,
     configFile,
     alwaysHidden,
+    imageDirs,
   };
 }
 
@@ -387,6 +441,13 @@ function main(): void {
   } else {
     console.log("Always hidden segments: .git");
   }
+  if (args.imageDirs !== null) {
+    console.log(`Visible image folders: ${args.imageDirs}`);
+  } else if (process.env.REMOTE_WS_IMAGE_DIRS) {
+    console.log(`Visible image folders: ${process.env.REMOTE_WS_IMAGE_DIRS}`);
+  } else {
+    console.log("Visible image folders: .clipboard");
+  }
   console.log("");
 
   const childEnv: NodeJS.ProcessEnv = {
@@ -397,6 +458,9 @@ function main(): void {
   };
   if (args.alwaysHidden !== null) {
     childEnv.REMOTE_WS_ALWAYS_HIDDEN = args.alwaysHidden;
+  }
+  if (args.imageDirs !== null) {
+    childEnv.REMOTE_WS_IMAGE_DIRS = args.imageDirs;
   }
 
   const child = runBuiltServer
