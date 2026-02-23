@@ -9,7 +9,7 @@ Mobile-friendly read/upload web workspace for this repository.
 - Delete images from `.clipboard/` and `.playwright-mcp/` from the UI
 - Preview text files and images
 - Render Markdown with Mermaid diagrams
-- Hide and block access to dotfiles/dot-directories (for example `.env`, `.git`)
+- Hide and block access to configured path segments (always hides `.git`)
 - Dedicated collapsible `.clipboard` panel for upload + quick image viewing
 
 This app is intentionally **no text editing** to keep remote access simple and lower risk.
@@ -62,6 +62,7 @@ cd /path/to/your/repo && pnpm dev
 ```bash
 pnpm dev -- config /path/to/config
 pnpm dev -- port 18111
+pnpm dev -- always-hidden .git,.env,.secrets
 pnpm dev -- install
 pnpm dev -- no-serve
 pnpm dev -- password your-password
@@ -76,6 +77,7 @@ pnpm dev -- password your-password --funnel
 - `REMOTE_WS_MAX_UPLOAD_BYTES` (default `26214400`)
 - `REMOTE_WS_PASSWORD` (optional, enables HTTP Basic Auth when set)
 - `REMOTE_WS_CONFIG_FILE` (optional config file path override)
+- `REMOTE_WS_ALWAYS_HIDDEN` (optional comma-separated extra hidden path segments)
 - `REPO_ROOT` (injected by launcher script)
 
 Password config file format (default: repo root `.remote-workspace.conf`):
@@ -102,7 +104,7 @@ Config file selection precedence:
 - `POST /api/clipboard/upload` always writes to `REPO_ROOT/.clipboard`
 - `DELETE /api/clipboard/file?name=<filename>` deletes one image in `REPO_ROOT/.clipboard`
 - `.clipboard` panel uses dedicated clipboard endpoints (`/api/clipboard/upload`, `/api/clipboard/list`, `/api/clipboard/file`)
-- Main repository browser still blocks all hidden paths and gitignored paths
+- Main repository browser blocks always-hidden path segments (`.git` + optional configured segments)
 - Gitignored paths are hidden/blocked (for example `node_modules/`, build artifacts, local secrets)
 - Accepted upload types are images only (`png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `bmp`, `heic`, `heif`, `avif`)
 - Clipboard panel supports both file picker and `Paste From Clipboard` button (when browser clipboard image API is available)

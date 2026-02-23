@@ -15,6 +15,7 @@ type ParsedArgs = {
   passwordEnabled: boolean;
   workspacePassword: string;
   configFile: string;
+  alwaysHidden: string | null;
 };
 
 const currentFilePath = fileURLToPath(import.meta.url);
@@ -29,6 +30,7 @@ Options:
   --repo-root <path> Repository root to expose (default: REPO_ROOT or cwd)
   --config <path>    Config file path (default uses precedence search)
   --port <port>      Listen port (default: REMOTE_WS_PORT or 18080)
+  --always-hidden <csv> Extra always-hidden path segments (comma-separated)
   --install          Force dependency install before start
   --skip-install     Skip install check even if node_modules is missing
   --no-serve         Skip tailscale serve setup
@@ -42,6 +44,7 @@ Examples:
   pnpm dev -- --repo-root /path/to/repo
   pnpm dev -- --config ~/.config/remote-workspace/config
   pnpm dev -- --port 18111
+  pnpm dev -- --always-hidden .git,.env,.secrets
   pnpm dev -- --password
   pnpm dev -- --password mypass --serve
   pnpm dev -- --password mypass --funnel
@@ -63,6 +66,28 @@ function parsePort(rawPort: string): number {
     fail(`Invalid --port value: ${rawPort} (must be 1-65535).`);
   }
   return value;
+}
+
+function parseAlwaysHiddenCsv(rawValue: string, sourceLabel: string): string {
+  const segments = rawValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (segments.length === 0) {
+    fail(`Invalid ${sourceLabel} value: provide at least one segment.`);
+  }
+
+  const normalizedSegments = new Set<string>();
+  for (const segment of segments) {
+    if (segment.includes("/") || segment.includes("\\") || segment.includes("\u0000")) {
+      fail(
+        `Invalid ${sourceLabel} segment "${segment}": segments must not contain path separators or null bytes.`,
+      );
+    }
+    normalizedSegments.add(segment);
+  }
+
+  return Array.from(normalizedSegments).join(",");
 }
 
 function parseConfigPassword(configFilePath: string): string {
@@ -126,6 +151,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let workspacePassword = "";
   let configFileFromArg: string | null = null;
   let configFile = "";
+  let alwaysHidden: string | null = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -154,6 +180,15 @@ function parseArgs(argv: string[]): ParsedArgs {
           fail("Missing value for --port.");
         }
         port = parsePort(next);
+        i += 1;
+        break;
+      }
+      case "--always-hidden": {
+        const next = argv[i + 1];
+        if (!next || next.startsWith("--")) {
+          fail("Missing value for --always-hidden.");
+        }
+        alwaysHidden = parseAlwaysHiddenCsv(next, "--always-hidden");
         i += 1;
         break;
       }
@@ -267,6 +302,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     passwordEnabled,
     workspacePassword,
     configFile,
+    alwaysHidden,
   };
 }
 
@@ -344,7 +380,24 @@ function main(): void {
   if (args.passwordEnabled) {
     console.log("Auth: Basic Auth enabled");
   }
+  if (args.alwaysHidden !== null) {
+    console.log(`Always hidden segments: .git + ${args.alwaysHidden}`);
+  } else if (process.env.REMOTE_WS_ALWAYS_HIDDEN) {
+    console.log(`Always hidden segments: .git + ${process.env.REMOTE_WS_ALWAYS_HIDDEN}`);
+  } else {
+    console.log("Always hidden segments: .git");
+  }
   console.log("");
+
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    REPO_ROOT: args.repoRoot,
+    REMOTE_WS_PORT: String(args.port),
+    REMOTE_WS_PASSWORD: args.workspacePassword,
+  };
+  if (args.alwaysHidden !== null) {
+    childEnv.REMOTE_WS_ALWAYS_HIDDEN = args.alwaysHidden;
+  }
 
   const child = runBuiltServer
     ? spawn(
@@ -352,12 +405,7 @@ function main(): void {
         [builtServerPath],
         {
           stdio: "inherit",
-          env: {
-            ...process.env,
-            REPO_ROOT: args.repoRoot,
-            REMOTE_WS_PORT: String(args.port),
-            REMOTE_WS_PASSWORD: args.workspacePassword,
-          },
+          env: childEnv,
         },
       )
     : spawn(
@@ -365,12 +413,7 @@ function main(): void {
         ["--dir", appDir, "dev:server"],
         {
           stdio: "inherit",
-          env: {
-            ...process.env,
-            REPO_ROOT: args.repoRoot,
-            REMOTE_WS_PORT: String(args.port),
-            REMOTE_WS_PASSWORD: args.workspacePassword,
-          },
+          env: childEnv,
         },
       );
 

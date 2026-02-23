@@ -29,6 +29,31 @@ function parseIntegerFromEnv(
   return parsedValue;
 }
 
+function assertValidHiddenSegment(segment: string, sourceName: string): void {
+  if (segment.includes("/") || segment.includes("\\") || segment.includes("\u0000")) {
+    throw new Error(
+      `Invalid ${sourceName} segment "${segment}": segments must not contain path separators or null bytes`,
+    );
+  }
+}
+
+function parseAlwaysHiddenSegments(rawValue: string | undefined): Set<string> {
+  const segments = new Set<string>([".git"]);
+  if (rawValue === undefined) {
+    return segments;
+  }
+
+  for (const rawSegment of rawValue.split(",")) {
+    const segment = rawSegment.trim();
+    if (!segment) {
+      continue;
+    }
+    assertValidHiddenSegment(segment, "REMOTE_WS_ALWAYS_HIDDEN");
+    segments.add(segment);
+  }
+  return segments;
+}
+
 const REPO_ROOT = path.resolve(process.env.REPO_ROOT ?? process.cwd());
 const HOST = "127.0.0.1";
 const PORT = parseIntegerFromEnv("REMOTE_WS_PORT", 18080, { min: 1, max: 65535 });
@@ -60,6 +85,7 @@ const ALLOWED_IMAGE_EXTENSIONS = new Set([
 const IMAGE_CACHE_CONTROL = "private, max-age=60, stale-while-revalidate=300";
 const METADATA_CACHE_CONTROL = "private, max-age=10, stale-while-revalidate=30";
 const BASIC_AUTH_PASSWORD = process.env.REMOTE_WS_PASSWORD ?? "";
+const ALWAYS_HIDDEN_SEGMENTS = parseAlwaysHiddenSegments(process.env.REMOTE_WS_ALWAYS_HIDDEN);
 const AUTH_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_MAX_ATTEMPTS = 20;
 const AUTH_BLOCK_MS = 15 * 60 * 1000;
@@ -266,7 +292,9 @@ function isHiddenRepoRelativePath(repoRelativePath: string): boolean {
   if (!repoRelativePath) {
     return false;
   }
-  return repoRelativePath.split("/").some((segment) => segment.startsWith("."));
+  return repoRelativePath
+    .split("/")
+    .some((segment) => ALWAYS_HIDDEN_SEGMENTS.has(segment));
 }
 
 function isBlockedHiddenRepoRelativePath(repoRelativePath: string): boolean {
